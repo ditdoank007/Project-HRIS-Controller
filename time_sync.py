@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import json
 import os
@@ -15,6 +15,11 @@ LOG_FILE = LOG_DIR / "time-sync.log"
 STATE_FILE = (
     Path("/opt/hris-finger-collector/data")
     / "clear_state.json"
+)
+
+TIME_SYNC_STATE_FILE = (
+    Path("/opt/hris-finger-collector/data")
+    / "time_sync_state.json"
 )
 
 
@@ -110,6 +115,60 @@ def get_bdip_global_policy():
     return payload.get("data", {})
 
 
+
+
+def load_time_sync_state():
+    if not TIME_SYNC_STATE_FILE.exists():
+        return {}
+
+    try:
+        with TIME_SYNC_STATE_FILE.open(
+            "r",
+            encoding="utf-8",
+        ) as file:
+            return json.load(file)
+    except Exception:
+        return {}
+
+
+def save_time_sync_state(data):
+    TIME_SYNC_STATE_FILE.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    with TIME_SYNC_STATE_FILE.open(
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(
+            data,
+            file,
+            indent=2,
+        )
+
+
+def is_time_sync_due(
+    state,
+    machine_code,
+    interval_minutes,
+):
+    last_sync_text = state.get(machine_code)
+
+    if not last_sync_text:
+        return True
+
+    try:
+        last_sync = datetime.fromisoformat(
+            last_sync_text
+        )
+    except Exception:
+        return True
+
+    return (
+        datetime.now() - last_sync
+        >= timedelta(minutes=interval_minutes)
+    )
 
 
 def load_clear_state():
@@ -438,6 +497,8 @@ def main():
     success = 0
     failed = 0
 
+    time_sync_state = load_time_sync_state()
+
     for machine in machines:
         code = machine.get("code")
         name = machine.get("name")
@@ -458,6 +519,19 @@ def main():
             is True
         )
 
+        try:
+            sync_interval = int(
+                policy.get(
+                    "timeSyncIntervalMinutes",
+                    5,
+                )
+            )
+        except (TypeError, ValueError):
+            sync_interval = 5
+
+        if sync_interval <= 0:
+            sync_interval = 5
+
         log(
             f"BDIP MACHINE : "
             f"{code} | {name} | {ip}:{port}"
@@ -467,12 +541,24 @@ def main():
             f"BDIP POLICY : "
             f"TIME_SYNC="
             f"{'ON' if sync_enabled else 'OFF'}"
+            f" | INTERVAL={sync_interval} MIN"
         )
 
         if not sync_enabled:
             log(
                 f"{code} : TIME SYNC DISABLED "
                 f"BY BDIP POLICY"
+            )
+            continue
+
+        if not is_time_sync_due(
+            time_sync_state,
+            code,
+            sync_interval,
+        ):
+            log(
+                f"{code} : TIME SYNC SKIPPED "
+                f"(INTERVAL={sync_interval} MIN)"
             )
             continue
 
@@ -499,6 +585,8 @@ def main():
 
         if result.get("success") is True:
             success += 1
+            time_sync_state[code] = datetime.now().isoformat()
+            save_time_sync_state(time_sync_state)
         else:
             failed += 1
 
