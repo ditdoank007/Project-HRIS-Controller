@@ -32,3 +32,8 @@ data/*.sql
 
 # Database cleanup backups
 data/db-cleanup-backup/
+
+# Runtime / production data
+
+# Runtime / production data
+data/
